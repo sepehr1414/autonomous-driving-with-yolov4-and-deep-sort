@@ -3,3 +3,4 @@ models/
 Videos/
 results/
 data/
+scripts/__pycache__/
