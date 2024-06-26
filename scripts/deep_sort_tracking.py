@@ -38,9 +38,15 @@ else:
 
 # Prepare video writer
 fourcc = cv2.VideoWriter_fourcc(*'XVID')
-output_path = './Real-time-object-detection/results/output_video.avi'
-out = cv2.VideoWriter(output_path, fourcc, 20.0, (int(cap.get(3)), int(cap.get(4))))
+output_video_path = './Real-time-object-detection/results/output_video.avi'
+out = cv2.VideoWriter(output_video_path, fourcc, 20.0, (int(cap.get(3)), int(cap.get(4))))
 
+# Create a directory to save the annotation files
+output_annotation_dir = './Real-time-object-detection/results/annotations'
+if not os.path.exists(output_annotation_dir):
+    os.makedirs(output_annotation_dir)
+
+frame_id = 0
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
@@ -48,9 +54,6 @@ while cap.isOpened():
 
     # Perform object detection with YOLOv4
     boxes = detect(yolo_model, frame)
-    
-    # Debugging: print detection boxes
-    print("Boxes:", boxes)
     
     bbox_xywh = []
     confs = []
@@ -63,9 +66,6 @@ while cap.isOpened():
         conf = box[4]
         label = int(box[6])
         
-        # Debugging: Print each detected box and its class ID
-        print(f"Detected box: {box}, Class ID: {label}, Class name: {class_names[label] if 0 <= label < len(class_names) else 'Unknown'}")
-
         bbox_xywh.append([(x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1])
         confs.append(conf)
         labels.append(label)
@@ -74,62 +74,50 @@ while cap.isOpened():
     confs = torch.Tensor(confs)
     labels = torch.Tensor(labels)
 
-    # Debugging: print DeepSORT inputs
-    print("bbox_xywh:", bbox_xywh)
-    print("confs:", confs)
-    print("labels:", labels)
-
     # Ensure DeepSORT input format is correct
     if bbox_xywh.numel() > 0:
-        outputs = deepsort.update(bbox_xywh, confs, labels, frame)
+        outputs, mask_outputs = deepsort.update(bbox_xywh, confs, labels, frame)
     else:
         outputs = []
 
-    # Debugging: print the outputs
-    print("Outputs:", outputs)
-
-    # Check if outputs is not empty and has the expected structure
-    if len(outputs) == 0:
-        print("No tracks found.")
-    else:
-        # Flatten the list of outputs if necessary
-        if isinstance(outputs[0], np.ndarray):
-            outputs = [output for sublist in outputs for output in sublist]
-        else:
-            outputs = outputs
-
-        # Use a set to keep track of unique track IDs
-        unique_track_ids = set()
-
+    # Prepare to write the annotation file for the current frame
+    annotation_file_path = os.path.join(output_annotation_dir, f"{frame_id:06d}.txt")
+    with open(annotation_file_path, 'w') as f:
         for output in outputs:
             if len(output) == 6:
                 bbox = output[:4]
                 track_id = int(output[4])
                 class_id = int(output[5])
-                color = (255, 0, 0)
                 
                 # Ensure class_id is within the range of class_names
                 if 0 <= class_id < len(class_names):
-                    label = f"ID {track_id}: {class_names[class_id]}"
+                    class_name = class_names[class_id]
                 else:
-                    label = f"ID {track_id}: Unknown"
+                    class_name = 'Unknown'
+                
+                # Convert bbox format from xyxy to the format used in KITTI annotations (xmin, ymin, xmax, ymax)
+                bbox_left = int(bbox[0])
+                bbox_top = int(bbox[1])
+                bbox_right = int(bbox[2])
+                bbox_bottom = int(bbox[3])
+                
+                # Write the annotation line
+                f.write(f"{class_name} 0 0 0 {bbox_left} {bbox_top} {bbox_right} {bbox_bottom} 0 0 0 0 0 0 0 0\n")
 
-                # Debugging: Print the label for each tracked object and check for duplicate track IDs
+                # Draw bounding box and label on frame
+                label = f"ID {track_id}: {class_name}"
+                color = (255, 0, 0)
+                cv2.rectangle(frame, (bbox_left, bbox_top), (bbox_right, bbox_bottom), color, 2)
+                cv2.putText(frame, label, (bbox_left, bbox_top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+                
+                # Print each detected object with its tracking ID and class name
                 print(f"Tracking ID: {track_id}, Class ID: {class_id}, Label: {label}")
-                if track_id in unique_track_ids:
-                    print(f"Warning: Duplicate track ID {track_id} found!")
-                else:
-                    unique_track_ids.add(track_id)
-
-                cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), color, 2)
-                cv2.putText(frame, label, (int(bbox[0]), int(bbox[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
-            else:
-                print("Unexpected output format:", output)
 
     # Write the frame to the output video
     out.write(frame)
+    frame_id += 1
 
 cap.release()
 out.release()
-
-print(f"Output video saved at {output_path}")
+print(f"Annotations saved in {output_annotation_dir}")
+print(f"Output video saved at {output_video_path}")
